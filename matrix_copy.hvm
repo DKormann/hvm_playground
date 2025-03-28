@@ -1,32 +1,42 @@
 
 data list  {#Nil #Cons{head tail}}
 
-@leaf(x) = λnode λleaf (leaf x)
 
-@node(a b) = λnode λleaf
-  
-  ! &{node nodeLR} = node
-  ! &{leafL leafR} = leaf
-  ! &{nodeL nodeR} = nodeLR
-  (node (a nodeL leafL) (b nodeR leafR))
 
 @ones(n) = λnode λleaf ~ n !leaf {
   0: (leaf 1)
   p:
-    ! & {node node_} = node
-    ! & {nodeL nodeR} = @ones(p) node_ leaf
+    ! & 0{node node_} = node
+    ! & 1{nodeL nodeR} = (@ones(p)//)
+      node_ leaf)
+
+
+    ! & 1{nodeL nodeR} = ( &1 {nodeL nodeR})
+    ! & 1{nodeL nodeR} = ( &1 {nodeL nodeR})
     (node nodeL nodeR)
 }
+
+@sum(t) = (t
+  (λl λr (+ l r))
+  (λl l))
 
 
 @onesr(n) = λnode λleaf ~n !leaf{
   0: (leaf 1)
-  p: (leaf 2)
+  p: 
+    ! & {nodeL nodeR} = @onesr(p)
+    (node nodeL nodeR)
 }
 
+@sumr(t) = (t
+  (λl λr (+ @sumr(r) @sumr(l)))
+  (λl l))
 
 @fst(n) = (n (λa λb a) λa a)
 
-@main = (@ones(1))
 
-// @main = onesr(2)
+
+
+
+@main = (@ones(2))
+// @main = @sumr(@onesr(3))
