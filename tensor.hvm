@@ -1,0 +1,26 @@
+
+
+
+data tree {#Leaf{val} #Node{left right}}
+data tensor {#Tensor{shape data}}
+
+// @ones(shape)
+
+@tree(n) = ~n{
+  0: #Leaf{1}
+  p:
+    !&0{v1 v2} = @tree(p)
+    #Node{v1 v2}
+}
+
+
+@fst(t) = ~t {
+  #Leaf{v}: v
+  #Node{v1 v2}: @fst(v1)
+}
+
+@main =
+
+  ! xx = 33
+  // @fst(@tree(6))
+

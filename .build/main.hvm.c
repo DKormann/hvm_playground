@@ -1,0 +1,1670 @@
+//./Type.hs//
+//./../IC.md//
+//./../HVM.md//
+//./../GOAL//
+
+#include <inttypes.h>
+#include <stdatomic.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <sys/mman.h>
+#include <unistd.h>
+#include <time.h>
+#include <stdbool.h>
+
+typedef uint8_t  Tag;
+typedef uint32_t Lab;
+typedef uint32_t Loc;
+typedef uint64_t Term;
+typedef uint16_t u16;
+typedef uint32_t u32;
+typedef uint64_t u64;
+typedef _Atomic(Term) ATerm;
+
+// Runtime Types
+// -------------
+
+typedef struct {
+  Term*  sbuf; // reduction stack buffer
+  u64*   spos; // reduction stack position
+  ATerm* heap; // global node buffer
+  u64*   size; // global node buffer position
+  u64*   itrs; // interaction count
+  u64*   frsh; // fresh dup label count
+  Term (*book[65536])(Term); // functions
+  u16    cari[65536]; // arity of each constructor
+  u16    clen[65536]; // case length of each constructor
+  u16    cadt[65536]; // ADT id of each constructor
+  u16    fari[65536]; // arity of each function
+} State;
+
+static State HVM = {
+  .sbuf = NULL,
+  .spos = NULL,
+  .heap = NULL,
+  .size = NULL,
+  .itrs = NULL,
+  .frsh = NULL,
+  .book = {NULL},
+  .cari = {0},
+  .clen = {0},
+  .cadt = {0},
+  .fari = {0},
+};
+
+// Constants
+// ---------
+
+#define DP0 0x00
+#define DP1 0x01
+#define VAR 0x02
+#define SUB 0x03
+#define REF 0x04
+#define LET 0x05
+#define APP 0x06
+#define MAT 0x08
+#define IFL 0x09
+#define SWI 0x0A
+#define OPX 0x0B
+#define OPY 0x0C
+#define ERA 0x0D
+#define LAM 0x0E
+#define SUP 0x0F
+#define CTR 0x10
+#define W32 0x11
+#define CHR 0x12
+
+#define OP_ADD 0x00
+#define OP_SUB 0x01
+#define OP_MUL 0x02
+#define OP_DIV 0x03
+#define OP_MOD 0x04
+#define OP_EQ  0x05
+#define OP_NE  0x06
+#define OP_LT  0x07
+#define OP_GT  0x08
+#define OP_LTE 0x09
+#define OP_GTE 0x0A
+#define OP_AND 0x0B
+#define OP_OR  0x0C
+#define OP_XOR 0x0D
+#define OP_LSH 0x0E
+#define OP_RSH 0x0F
+
+#define DUP_F 0xFFFF
+#define SUP_F 0xFFFE
+#define LOG_F 0xFFFD
+
+#define LAZY 0x0
+#define STRI 0x1
+#define PARA 0x2
+
+#define VOID 0x00000000000000
+
+// Heap
+// ----
+
+u64 get_len() {
+  return *HVM.size;
+}
+
+u64 get_itr() {
+  return *HVM.itrs;
+}
+
+u64 fresh() {
+  return (*HVM.frsh)++;
+}
+
+// Terms
+// ------
+
+Term term_new(Tag tag, Lab lab, Loc loc) {
+  Term tag_enc = tag;
+  Term lab_enc = ((Term)lab) << 8;
+  Term loc_enc = ((Term)loc) << 32;
+  return tag_enc | lab_enc | loc_enc;
+}
+
+Tag term_tag(Term x) {
+  return x & 0x7F;
+}
+
+Lab term_lab(Term x) {
+  return (x >> 8) & 0xFFFFFF;
+}
+
+Loc term_loc(Term x) {
+  return (x >> 32) & 0xFFFFFFFF;
+}
+
+u64 term_get_bit(Term x) {
+  return (x >> 7) & 1;
+}
+
+Term term_set_bit(Term term) {
+  return term | (1ULL << 7);
+}
+
+Term term_rem_bit(Term term) {
+  return term & ~(1ULL << 7);
+}
+
+Term term_set_loc(Term x, Loc loc) {
+  return (x & 0x00000000FFFFFFFF) | (((Term)loc) << 32);
+}
+
+_Bool term_is_atom(Term term) {
+  switch (term_tag(term)) {
+    case ERA:
+    case W32:
+    case CHR: return 1;
+    default: return 0;
+  }
+}
+
+// Atomics
+// -------
+
+Term swap(Loc loc, Term term) {
+  Term val = atomic_exchange_explicit(&HVM.heap[loc], term, memory_order_relaxed);
+  if (val == 0) {
+    printf("SWAP 0 at %08llx\n", (u64)loc);
+    exit(0);
+  }
+  return val;
+}
+
+Term got(Loc loc) {
+  Term val = atomic_load_explicit(&HVM.heap[loc], memory_order_relaxed);
+  if (val == 0) {
+    printf("GOT 0 at %08llx\n", (u64)loc);
+    exit(0);
+  }
+  return val;
+}
+
+void set(Loc loc, Term term) {
+  atomic_store_explicit(&HVM.heap[loc], term, memory_order_relaxed);
+}
+
+void sub(Loc loc, Term term) {
+  set(loc, term_set_bit(term));
+}
+
+Term take(Loc loc) {
+  return swap(loc, VOID);
+}
+
+// Allocation
+// ----------
+
+Loc alloc_node(Loc arity) {
+  u64 old = *HVM.size;
+  *HVM.size += arity;
+  return old;
+}
+
+Loc inc_itr() {
+  u64 old = *HVM.itrs;
+  *HVM.itrs += 1;
+  return old;
+}
+
+// Stack
+// ----
+
+void spush(Term term) {
+  HVM.sbuf[(*HVM.spos)++] = term;
+}
+
+Term spop() {
+  return HVM.sbuf[--(*HVM.spos)];
+}
+
+// Stringification
+// ---------------
+
+void print_tag(Tag tag) {
+  switch (tag) {
+    case VAR: printf("VAR"); break;
+    case DP0: printf("DP0"); break;
+    case DP1: printf("DP1"); break;
+    case APP: printf("APP"); break;
+    case LAM: printf("LAM"); break;
+    case ERA: printf("ERA"); break;
+    case SUP: printf("SUP"); break;
+    case REF: printf("REF"); break;
+    case LET: printf("LET"); break;
+    case CTR: printf("CTR"); break;
+    case MAT: printf("MAT"); break;
+    case IFL: printf("IFL"); break;
+    case SWI: printf("SWI"); break;
+    case W32: printf("W32"); break;
+    case CHR: printf("CHR"); break;
+    case OPX: printf("OPX"); break;
+    case OPY: printf("OPY"); break;
+    default : printf("???"); break;
+  }
+}
+
+void print_term(Term term) {
+  printf("term_new(");
+  print_tag(term_tag(term));
+  printf(",0x%06llx,0x%08llx)", (u64)term_lab(term), (u64)term_loc(term));
+}
+
+void print_heap() {
+  for (Loc i = 0; i < *HVM.size; i++) {
+    Term term = got(i);
+    if (term != 0) {
+      printf("set(0x%08llx, ", (u64)i);
+      print_term(term);
+      printf(");\n");
+    }
+  }
+}
+
+// Evaluation
+// ----------
+
+// @foo(&L{ax ay} b c ...)
+// ----------------------- REF-SUP-COPY (when @L not in @foo)
+// ! &L{bx by} = b
+// ! &L{cx cy} = b
+// ...
+// &L{@foo(ax bx cx ...) @foo(ay by cy ...)}
+Term reduce_ref_sup(Term ref, u16 idx) {
+  inc_itr();
+  Loc ref_loc = term_loc(ref);
+  Lab ref_lab = term_lab(ref);
+  u16 fun_id = ref_lab;
+  u16 arity  = HVM.fari[fun_id];
+  if (idx >= arity) {
+    printf("ERROR: Invalid index in reduce_ref_sup\n");
+    exit(1);
+  }
+  Term sup = got(ref_loc + idx);
+  if (term_tag(sup) != SUP) {
+    printf("ERROR: Expected SUP at index %u\n", idx);
+    exit(1);
+  }
+  Lab sup_lab = term_lab(sup);
+  Loc sup_loc = term_loc(sup);
+  Term sup0 = got(sup_loc + 0);
+  Term sup1 = got(sup_loc + 1);
+  // Allocate space for new REF node arguments for the second branch
+  Loc ref1_loc = alloc_node(arity);
+  for (u64 i = 0; i < arity; ++i) {
+    if (i != idx) {
+      // Duplicate argument
+      Term arg = got(ref_loc + i);
+      Loc dup_loc = alloc_node(1);
+      set(dup_loc + 0, arg);
+      set(ref_loc + i, term_new(DP0, sup_lab, dup_loc));
+      set(ref1_loc + i, term_new(DP1, sup_lab, dup_loc));
+    } else {
+      // Set the SUP components directly
+      set(ref_loc + i, sup0);
+      set(ref1_loc + i, sup1);
+    }
+  }
+  // Create new REF nodes
+  Term ref0 = term_new(REF, ref_lab, ref_loc);
+  Term ref1 = term_new(REF, ref_lab, ref1_loc);
+  // Reuse sup_loc to create the new SUP node
+  set(sup_loc + 0, ref0);
+  set(sup_loc + 1, ref1);
+  return term_new(SUP, sup_lab, sup_loc);
+}
+
+// @foo(a b c ...)
+// -------------------- REF
+// book[foo](a b c ...)
+Term reduce_ref(Term ref) {
+  //printf("reduce_ref "); print_term(ref); printf("\n");
+  //printf("call %d %p\n", term_loc(ref), HVM.book[term_loc(ref)]);
+  inc_itr();
+  return HVM.book[term_lab(ref)](ref);
+}
+
+// ! x = val
+// bod
+// --------- LET
+// x <- val
+// bod
+Term reduce_let(Term let, Term val) {
+  //printf("reduce_let "); print_term(let); printf("\n");
+  inc_itr();
+  Loc let_loc = term_loc(let);
+  Term bod    = got(let_loc + 1);
+  sub(let_loc + 0, val);
+  return bod;
+}
+
+// &L(* a)
+// ------- APP-ERA
+// *
+Term reduce_app_era(Term app, Term era) {
+  //printf("reduce_app_era "); print_term(app); printf("\n");
+  inc_itr();
+  return era;
+}
+
+// &L(&Rλx(body) arg)
+// ---------------- APP-LAM
+// if &L == &R:
+//   x <- arg
+//   body
+// else:
+//   x <- &Lλy(z)
+//   &Rλz&L(body &R(arg y))
+Term reduce_app_lam(Term app, Term lam) {
+  inc_itr();
+  Loc app_loc = term_loc(app);
+  Lab app_lab = term_lab(app);
+  Loc lam_loc = term_loc(lam);
+  Lab lam_lab = term_lab(lam);
+  Term arg    = got(app_loc + 1);
+  Term bod    = got(lam_loc + 0);
+  if (app_lab == lam_lab) {
+    // If labels match, perform standard substitution
+    sub(lam_loc + 0, arg);
+    return bod;
+  } else {
+    printf("swap\n");
+    // If labels differ, create new structures
+    Loc lam_y = alloc_node(1); // Will be &Lλy(z)
+    Loc lam_z = alloc_node(1); // Will be &Rλz(...)
+    
+    // Create a variable that will be bound by lam_z
+    Term var_y = term_new(VAR, 0, lam_y);
+    Term var_z = term_new(VAR, 0, lam_z);
+    
+    // Set up the new lambda that will replace x
+    set(lam_y + 0, var_z);
+    
+    // Substitute x with &Lλy(z)
+    sub(lam_loc + 0, term_new(LAM, app_lab, lam_y));
+    
+    // Create the inner application: &R(arg y)
+    Loc inn_app = alloc_node(2);
+    set(inn_app + 0, arg);
+    set(inn_app + 1, var_y);
+    
+    // Create the out application: &L(body &R(arg y))
+    Loc out_app = alloc_node(2);
+    set(out_app + 0, bod);
+    set(out_app + 1, term_new(APP, lam_lab, inn_app));
+    
+    // Set up the out lambda's body
+    set(lam_z + 0, term_new(APP, app_lab, out_app));
+    
+    // Return &Rλz(...)
+    return term_new(LAM, lam_lab, lam_z);
+  }
+}
+
+// &R(&L{a b} c)
+// --------------------- APP-SUP
+// ! &L{x0 x1} = c
+// &L{&R(a x0) &R(b x1)}
+Term reduce_app_sup(Term app, Term sup) {
+  //printf("reduce_app_sup "); print_term(app); printf("\n");
+  inc_itr();
+  Loc app_loc = term_loc(app);
+  Lab app_lab = term_lab(app);
+  Loc sup_loc = term_loc(sup);
+  Lab sup_lab = term_lab(sup);
+  Term arg    = got(app_loc + 1);
+  Term tm0    = got(sup_loc + 0);
+  Term tm1    = got(sup_loc + 1);
+  Loc du0     = alloc_node(1);
+  //Loc su0     = alloc_node(2);
+  //Loc ap0     = alloc_node(2);
+  Loc ap0     = sup_loc;
+  Loc su0     = app_loc;
+  Loc ap1     = alloc_node(2);
+  set(du0 + 0, arg);
+  //set(ap0 + 0, tm0);
+  set(ap0 + 1, term_new(DP0, sup_lab, du0));
+  set(ap1 + 0, tm1);
+  set(ap1 + 1, term_new(DP1, sup_lab, du0));
+  set(su0 + 0, term_new(APP, app_lab, ap0));
+  set(su0 + 1, term_new(APP, app_lab, ap1));
+  return term_new(SUP, sup_lab, su0);
+}
+
+// &L(#{x y z ...} a)
+// ------------------ APP-CTR
+// ⊥
+Term reduce_app_ctr(Term app, Term ctr) {
+  //printf("reduce_app_ctr "); print_term(app); printf("\n");
+  printf("invalid:app-ctr");
+  exit(0);
+}
+
+// &L(123 a)
+// --------- APP-W32
+// ⊥
+Term reduce_app_w32(Term app, Term w32) {
+  //printf("reduce_app_w32 "); print_term(app); printf("\n");
+  printf("invalid:app-w32");
+  exit(0);
+}
+
+// ! &L{x y} = *
+// ------------- DUP-ERA
+// x <- *
+// y <- *
+Term reduce_dup_era(Term dup, Term era) {
+  //printf("reduce_dup_era "); print_term(dup); printf("\n");
+  inc_itr();
+  Loc dup_loc = term_loc(dup);
+  sub(dup_loc + 0, era);
+  return term_rem_bit(era);
+}
+
+// ! &L{r s} = &Rλx(f)
+// ------------------- DUP-LAM
+// ! &L{f0 f1} = f
+// r <- &Rλx0(f0)
+// s <- &Rλx1(f1)
+// x <- &L{x0 x1}
+Term reduce_dup_lam(Term dup, Term lam) {
+  //printf("reduce_dup_lam "); print_term(dup); printf("\n");
+  inc_itr();
+  Loc dup_loc = term_loc(dup);
+  Lab dup_lab = term_lab(dup);
+  Loc lam_loc = term_loc(lam);
+  Lab lam_lab = term_lab(lam);
+  Term bod    = got(lam_loc + 0);
+  Loc du0     = alloc_node(1);
+  Loc lm0     = alloc_node(1);
+  Loc lm1     = alloc_node(1);
+  Loc su0     = alloc_node(2);
+  set(du0 + 0, bod);
+  set(lm0 + 0, term_new(DP0, dup_lab, du0));
+  set(lm1 + 0, term_new(DP1, dup_lab, du0));
+  set(su0 + 0, term_new(VAR, 0, lm0));
+  set(su0 + 1, term_new(VAR, 0, lm1));
+  sub(lam_loc + 0, term_new(SUP, dup_lab, su0));
+  if (term_tag(dup) == DP0) {
+    sub(dup_loc + 0, term_new(LAM, lam_lab, lm1));
+    return term_new(LAM, lam_lab, lm0);
+  } else {
+    sub(dup_loc + 0, term_new(LAM, lam_lab, lm0));
+    return term_new(LAM, lam_lab, lm1);
+  }
+}
+
+// ! &L{x y} = &R{a b}
+// ------------------- DUP-SUP
+// if L == R:
+//   x <- a
+//   y <- b
+// else:
+//   x <- &R{a0 b0} 
+//   y <- &R{a1 b1}
+//   ! &L{a0 a1} = a
+//   ! &L{b0 b1} = b
+Term reduce_dup_sup(Term dup, Term sup) {
+  //printf("reduce_dup_sup %u %u | %llu ", term_lab(dup), term_lab(sup), *HVM.spos); print_term(dup); printf(" "); print_term(sup); printf("\n");
+  inc_itr();
+  Loc dup_loc = term_loc(dup);
+  Lab dup_lab = term_lab(dup);
+  Lab sup_lab = term_lab(sup);
+  Loc sup_loc = term_loc(sup);
+  if (dup_lab == sup_lab) {
+    Term tm0 = got(sup_loc + 0);
+    Term tm1 = got(sup_loc + 1);
+    if (term_tag(dup) == DP0) {
+      sub(dup_loc + 0, tm1);
+      return term_rem_bit(tm0);
+    } else {
+      sub(dup_loc + 0, tm0);
+      return term_rem_bit(tm1);
+    }
+  } else {
+    //Loc du0 = alloc_node(1);
+    //Loc du1 = alloc_node(1);
+    Loc du0 = sup_loc + 0;
+    Loc du1 = sup_loc + 1;
+    Loc su0 = alloc_node(2);
+    Loc su1 = alloc_node(2);
+    //Term tm0 = got(sup_loc + 0);
+    //Term tm1 = got(sup_loc + 1);
+    //set(du0 + 0, tm0);
+    //set(du1 + 0, tm1);
+    set(su0 + 0, term_new(DP0, dup_lab, du0));
+    set(su0 + 1, term_new(DP0, dup_lab, du1));
+    set(su1 + 0, term_new(DP1, dup_lab, du0));
+    set(su1 + 1, term_new(DP1, dup_lab, du1));
+    if (term_tag(dup) == DP0) {
+      sub(dup_loc + 0, term_new(SUP, sup_lab, su1));
+      return term_new(SUP, sup_lab, su0);
+    } else {
+      sub(dup_loc + 0, term_new(SUP, sup_lab, su0));
+      return term_new(SUP, sup_lab, su1);
+    }
+  }
+}
+
+// ! &L{x y} = #{a b c ...}
+// ------------------------ DUP-CTR
+// ! &L{a0 a1} = a
+// ! &L{b0 b1} = b
+// ! &L{c0 c1} = c
+// ...
+// x <- #{a0 b0 c0 ...} 
+// y <- #{a1 b1 c1 ...}
+Term reduce_dup_ctr(Term dup, Term ctr) {
+  //printf("reduce_dup_ctr "); print_term(dup); printf("\n");
+  inc_itr();
+  Loc dup_loc = term_loc(dup);
+  Lab dup_lab = term_lab(dup);
+  Loc ctr_loc = term_loc(ctr);
+  Lab ctr_lab = term_lab(ctr);
+  u64 ctr_ari = HVM.cari[ctr_lab];
+  //Loc ctr0    = alloc_node(ctr_ari);
+  Loc ctr0    = ctr_loc;
+  Loc ctr1    = alloc_node(ctr_ari);
+  for (u64 i = 0; i < ctr_ari; i++) {
+    Loc du0 = alloc_node(1);
+    set(du0 + 0, got(ctr_loc + i));
+    set(ctr0 + i, term_new(DP0, dup_lab, du0));
+    set(ctr1 + i, term_new(DP1, dup_lab, du0));
+  }
+  if (term_tag(dup) == DP0) {
+    sub(dup_loc + 0, term_new(CTR, ctr_lab, ctr1));
+    return term_new(CTR, ctr_lab, ctr0);
+  } else {
+    sub(dup_loc + 0, term_new(CTR, ctr_lab, ctr0));
+    return term_new(CTR, ctr_lab, ctr1);
+  }
+}
+
+// ! &L{x y} = 123
+// --------------- DUP-W32
+// x <- 123
+// y <- 123
+Term reduce_dup_w32(Term dup, Term w32) {
+  //printf("reduce_dup_w32 "); print_term(dup); printf("\n");
+  inc_itr();
+  Loc dup_loc = term_loc(dup);
+  sub(dup_loc + 0, w32);
+  return term_rem_bit(w32);
+}
+
+// ! &L{x y} = @foo(a b c ...)
+// --------------------------- DUP-REF-COPY (when &L not in @foo)
+// ! &L{a0 a1} = a
+// ! &L{b0 b1} = b
+// ! &L{c0 c1} = c
+// ...
+// x <- @foo(a0 b0 c0 ...)
+// y <- @foo(a1 b1 c1 ...)
+Term reduce_dup_ref(Term dup, Term ref) {
+  //printf("reduce_dup_ref "); print_term(dup); printf("\n");
+  inc_itr();
+  Loc dup_loc = term_loc(dup);
+  Lab dup_lab = term_lab(dup);
+  Loc ref_loc = term_loc(ref);
+  Lab ref_lab = term_lab(ref);
+  u64 ref_ari = HVM.fari[ref_lab];
+  Loc ref0    = ref_loc;
+  Loc ref1    = alloc_node(ref_ari);
+  for (u64 i = 0; i < ref_ari; i++) {
+    Loc du0 = alloc_node(1);
+    set(du0 + 0, got(ref_loc + i));
+    set(ref0 + i, term_new(DP0, dup_lab, du0));
+    set(ref1 + i, term_new(DP1, dup_lab, du0));
+  }
+  if (term_tag(dup) == DP0) {
+    sub(dup_loc + 0, term_new(REF, ref_lab, ref1));
+    return term_new(REF, ref_lab, ref0);
+  } else {
+    sub(dup_loc + 0, term_new(REF, ref_lab, ref0));
+    return term_new(REF, ref_lab, ref1);
+  }
+}
+
+// ~ * {K0 K1 K2 ...} 
+// ------------------ MAT-ERA
+// *
+Term reduce_mat_era(Term mat, Term era) {
+  //printf("reduce_mat_era "); print_term(mat); printf("\n");
+  inc_itr();
+  return era;
+}
+
+// ~ &Lλx(x) {K0 K1 K2 ...}
+// ------------------------ MAT-LAM
+// ⊥
+Term reduce_mat_lam(Term mat, Term lam) {
+  //printf("reduce_mat_lam "); print_term(mat); printf("\n");
+  printf("invalid:mat-lam");
+  exit(0);
+}
+
+// ~ &L{x y} {K0 K1 K2 ...}
+// ------------------------ MAT-SUP
+// ! &L{k0a k0b} = K0
+// ! &L{k1a k1b} = K1
+// ! &L{k2a k2b} = K2
+// ...
+// &L{ ~ x {K0a K1a K2a ...}
+//     ~ y {K0b K1b K2b ...} }
+Term reduce_mat_sup(Term mat, Term sup) {
+  //printf("reduce_mat_sup "); print_term(mat); printf("\n");
+  inc_itr();
+  Tag mat_tag = term_tag(mat);
+  Lab mat_lab = term_lab(mat);
+  Loc mat_loc = term_loc(mat);
+  Loc sup_loc = term_loc(sup);
+  Lab sup_lab = term_lab(sup);
+  Term tm0    = got(sup_loc + 0);
+  Term tm1    = got(sup_loc + 1);
+  u64 mat_len = mat_tag == SWI ? mat_lab : mat_tag == IFL ? 2 : HVM.clen[mat_lab];
+  Loc mat1    = alloc_node(1 + mat_len);
+  //Loc mat0    = alloc_node(1 + mat_len);
+  //Loc sup0    = alloc_node(2);
+  Loc mat0    = mat_loc;
+  Loc sup0    = sup_loc;
+  set(mat0 + 0, tm0);
+  set(mat1 + 0, tm1);
+  for (u64 i = 0; i < mat_len; i++) {
+    Loc du0 = alloc_node(1);
+    set(du0 + 0, got(mat_loc + 1 + i));
+    set(mat0 + 1 + i, term_new(DP0, sup_lab, du0));
+    set(mat1 + 1 + i, term_new(DP1, sup_lab, du0));
+  }
+  set(sup0 + 0, term_new(mat_tag, mat_lab, mat0));
+  set(sup0 + 1, term_new(mat_tag, mat_lab, mat1));
+  return term_new(SUP, sup_lab, sup0);
+}
+
+Term reduce_mat_ctr(Term mat, Term ctr) {
+  inc_itr();
+  Tag mat_tag = term_tag(mat);
+  Loc mat_loc = term_loc(mat);
+  Lab mat_lab = term_lab(mat);
+  // If-Let
+  if (mat_tag == IFL) {
+    Loc ctr_loc = term_loc(ctr);
+    Lab ctr_lab = term_lab(ctr);
+    u64 mat_ctr = mat_lab;
+    u64 ctr_num = ctr_lab;
+    u64 ctr_ari = HVM.cari[ctr_num];
+    if (mat_ctr == ctr_num) {
+      Term app = got(mat_loc + 1);
+      for (u64 i = 0; i < ctr_ari; i++) {
+        Loc new_app = i == 0 ? mat_loc : alloc_node(2);
+        set(new_app + 0, app);
+        set(new_app + 1, got(ctr_loc + i));
+        app = term_new(APP, 0, new_app);
+      }
+      return app;
+    } else {
+      Term app = got(mat_loc + 2);
+      Loc new_app = mat_loc;
+      set(new_app + 0, app);
+      set(new_app + 1, ctr);
+      app = term_new(APP, 0, new_app);
+      return app;
+    }
+  // Match
+  } else {
+    Loc ctr_loc = term_loc(ctr);
+    Lab ctr_lab = term_lab(ctr);
+    u64 ctr_num = ctr_lab;
+    u64 ctr_ari = HVM.cari[ctr_num];
+    u64 mat_ctr = mat_lab;
+    u64 cse_idx = ctr_num - mat_ctr;
+    Term app = got(mat_loc + 1 + cse_idx);
+    for (u64 i = 0; i < ctr_ari; i++) {
+      Loc new_app = i == 0 ? mat_loc : alloc_node(2);
+      set(new_app + 0, app);
+      set(new_app + 1, got(ctr_loc + i));
+      app = term_new(APP, 0, new_app);
+    }
+    return app;
+  }
+}
+
+// ~ num {K0 K1 K2 ... KN}
+// ----------------------- MAT-W32
+// if n < N: Kn
+// else    : KN(num-N)
+Term reduce_mat_w32(Term mat, Term w32) {
+  //printf("reduce_mat_w32 "); print_term(mat); printf("\n");
+  inc_itr();
+  Loc mat_loc = term_loc(mat);
+  Lab mat_lab = term_lab(mat);
+  u64 mat_len = mat_lab;
+  u64 w32_val = term_loc(w32);
+  if (w32_val < mat_len - 1) {
+    return got(mat_loc + 1 + w32_val);
+  } else {
+    Term fn = got(mat_loc + mat_len);
+    Loc app = mat_loc;
+    set(app + 0, fn);
+    set(app + 1, term_new(W32, 0, w32_val - (mat_len - 1)));
+    return term_new(APP, 0, app);
+  }
+}
+
+// <op(* b)
+// -------- OPX-ERA
+// *
+Term reduce_opx_era(Term opx, Term era) {
+  //printf("reduce_opx_era "); print_term(opx); printf("\n");
+  inc_itr();
+  return era;
+}
+
+// <op(&Lλx(B) y)
+// --------------- OPX-LAM
+// ⊥
+Term reduce_opx_lam(Term opx, Term lam) {
+  //printf("reduce_opx_lam "); print_term(opx); printf("\n");
+  printf("invalid:opx-lam");
+  exit(0);
+}
+
+// <op(&L{x0 x1} y)
+// ------------------------- OPX-SUP
+// ! &L{y0 y1} = y
+// &L{<op(x0 y0) <op(x1 y1)}
+Term reduce_opx_sup(Term opx, Term sup) {
+  //printf("reduce_opx_sup "); print_term(opx); printf("\n");
+  inc_itr();
+  Loc opx_loc = term_loc(opx);
+  Loc sup_loc = term_loc(sup);
+  Lab sup_lab = term_lab(sup);
+  Term nmy    = got(opx_loc + 1);
+  Term tm0    = got(sup_loc + 0);
+  Term tm1    = got(sup_loc + 1);
+  Loc du0     = alloc_node(1);
+  //Loc op0     = alloc_node(2);
+  //Loc op1     = alloc_node(2);
+  Loc op0     = opx_loc;
+  Loc op1     = sup_loc;
+  Loc su0     = alloc_node(2);
+  set(du0 + 0, nmy);
+  set(op0 + 0, tm0);
+  set(op0 + 1, term_new(DP0, sup_lab, du0));
+  set(op1 + 0, tm1);
+  set(op1 + 1, term_new(DP1, sup_lab, du0));
+  set(su0 + 0, term_new(OPX, term_lab(opx), op0));
+  set(su0 + 1, term_new(OPX, term_lab(opx), op1));
+  return term_new(SUP, sup_lab, su0);
+}
+
+// <op(#{x0 x1 x2...} y)
+// --------------------- OPX-CTR
+// ⊥
+Term reduce_opx_ctr(Term opx, Term ctr) {
+  //printf("reduce_opx_ctr "); print_term(opx); printf("\n");
+  printf("invalid:opx-ctr");
+  exit(0);
+}
+
+// <op(x0 x1)
+// ---------- OPX-W32
+// >op(x0 x1)
+Term reduce_opx_w32(Term opx, Term w32) {
+  //printf("reduce_opx_w32 "); print_term(opx); printf("\n");
+  inc_itr();
+  Lab opx_lab = term_lab(opx);
+  Loc opx_loc = term_loc(opx);
+  set(opx_loc + 0, w32);
+  return term_new(OPY, opx_lab, opx_loc);
+}
+
+// >op(a *)
+// -------- OPY-ERA
+// *
+Term reduce_opy_era(Term opy, Term era) {
+  //printf("reduce_opy_era "); print_term(opy); printf("\n");
+  inc_itr();
+  return era;
+}
+
+// >op(a λx(B))
+// ------------ OPY-LAM
+// *
+Term reduce_opy_lam(Term opy, Term era) {
+  //printf("reduce_opy_lam "); print_term(opy); printf("\n");
+  printf("invalid:opy-lam");
+  exit(0);
+}
+
+// >op(a &L{x y})
+// --------------------- OPY-SUP
+// &L{>op(a x) >op(a y)}
+Term reduce_opy_sup(Term opy, Term sup) {
+  //printf("reduce_opy_sup "); print_term(opy); printf("\n");
+  inc_itr();
+  Loc opy_loc = term_loc(opy);
+  Loc sup_loc = term_loc(sup);
+  Lab sup_lab = term_lab(sup);
+  Term nmx    = got(opy_loc + 0);
+  Term tm0    = got(sup_loc + 0);
+  Term tm1    = got(sup_loc + 1);
+  //Loc op0     = alloc_node(2);
+  //Loc op1     = alloc_node(2);
+  Loc op0     = opy_loc;
+  Loc op1     = sup_loc;
+  Loc su0     = alloc_node(2);
+  // set(op0 + 0, nmx);
+  set(op0 + 1, tm0);
+  set(op1 + 0, nmx);
+  // set(op1 + 1, tm1);
+  set(su0 + 0, term_new(OPY, term_lab(opy), op0));
+  set(su0 + 1, term_new(OPY, term_lab(opy), op1));
+  return term_new(SUP, sup_lab, su0);
+}
+
+// >op(#{x y z ...} b)
+// ---------------------- OPY-CTR
+// ⊥
+Term reduce_opy_ctr(Term opy, Term ctr) {
+  //printf("reduce_opy_ctr "); print_term(opy); printf("\n");
+  printf("invalid:opy-ctr");
+  exit(0);
+}
+
+// >op(x y)
+// --------- OPY-W32
+// x op y
+Term reduce_opy_w32(Term opy, Term w32) {
+  //printf("reduce_opy_w32 "); print_term(opy); printf("\n");
+  inc_itr();
+  Loc opy_loc = term_loc(opy);
+  Tag t = term_tag(w32);
+  u32 x = term_loc(got(opy_loc + 0));
+  u32 y = term_loc(w32);
+  u32 result;
+  switch (term_lab(opy)) {
+    case OP_ADD: result = x + y; break;
+    case OP_SUB: result = x - y; break;
+    case OP_MUL: result = x * y; break;
+    case OP_DIV: result = x / y; break;
+    case OP_MOD: result = x % y; break;
+    case OP_EQ:  result = x == y; break;
+    case OP_NE:  result = x != y; break;
+    case OP_LT:  result = x < y; break;
+    case OP_GT:  result = x > y; break;
+    case OP_LTE: result = x <= y; break;
+    case OP_GTE: result = x >= y; break;
+    case OP_AND: result = x & y; break;
+    case OP_OR:  result = x | y; break;
+    case OP_XOR: result = x ^ y; break;
+    case OP_LSH: result = x << y; break;
+    case OP_RSH: result = x >> y; break;
+    default: {
+      printf("invalid:opy-w32");
+      exit(0);
+    }
+  }
+  return term_new(t, 0, result);
+}
+
+Term reduce(Term term) {
+  if (term_tag(term) >= ERA) return term;
+  Term next = term;
+  u64  stop = *HVM.spos;
+  u64* spos = HVM.spos;
+
+  while (1) {
+    //printf("NEXT "); print_term(term); printf("\n");
+    //printf("PATH ");
+    //for (u64 i = 0; i < *spos; ++i) {
+      //print_tag(term_tag(HVM.sbuf[i]));
+      //printf(" ");
+    //}
+    //printf(" ~ %p", HVM.sbuf);
+    //printf("\n");
+    Tag tag = term_tag(next);
+    Lab lab = term_lab(next);
+    Loc loc = term_loc(next);
+
+    switch (tag) {
+
+      case LET: {
+        switch (lab) {
+          case LAZY: {
+            next = reduce_let(next, got(loc + 0));
+            continue;
+          }
+          case STRI: {
+            spush(next);
+            next = got(loc + 0);
+            continue;
+          }
+          case PARA: {
+            printf("TODO\n");
+            continue;
+          }
+          default: {
+            printf("invalid:let");
+            exit(0);
+          }
+        }
+      }
+
+      case APP: {
+        spush(next);
+        next = got(loc + 0);
+        continue;
+      }
+
+      case MAT:
+      case IFL:
+      case SWI: {
+        spush(next);
+        next = got(loc + 0);
+        continue;
+      }
+
+      case OPX: {
+        spush(next);
+        next = got(loc + 0);
+        continue;
+      }
+
+      case OPY: {
+        spush(next);
+        next = got(loc + 1);
+        continue;
+      }
+
+      case DP0:
+      case DP1: {
+        Term sub = got(loc + 0);
+        if (term_get_bit(sub) == 0) {
+          spush(next);
+          next = sub;
+          continue;
+        } else {
+          next = term_rem_bit(sub);
+          continue;
+        }
+      }
+
+      case VAR: {
+        Term sub = got(loc);
+        if (term_get_bit(sub) == 0) {
+          break;
+        } else {
+          next = term_rem_bit(sub);
+          continue;
+        }
+      }
+
+      case REF: {
+        next = reduce_ref(next); // TODO
+        continue;
+      }
+
+      default: {
+
+        if ((*spos) == stop) {
+          break;
+        } else {
+          Term prev = HVM.sbuf[--(*spos)];
+          Tag  ptag = term_tag(prev);
+          Lab  plab = term_lab(prev);
+          Loc  ploc = term_loc(prev);
+          switch (ptag) {
+
+            case LET: {
+              next = reduce_let(prev, next);
+              continue;
+            }
+
+            case APP: {
+              switch (tag) {
+                case ERA: next = reduce_app_era(prev, next); continue;
+                case LAM: next = reduce_app_lam(prev, next); continue;
+                case SUP: next = reduce_app_sup(prev, next); continue;
+                case CTR: next = reduce_app_ctr(prev, next); continue;
+                case W32: next = reduce_app_w32(prev, next); continue;
+                case CHR: next = reduce_app_w32(prev, next); continue;
+                default: break;
+              }
+              break;
+            }
+
+            case DP0:
+            case DP1: {
+              switch (tag) {
+                case ERA: next = reduce_dup_era(prev, next); continue;
+                case LAM: next = reduce_dup_lam(prev, next); continue;
+                case SUP: next = reduce_dup_sup(prev, next); continue;
+                case CTR: next = reduce_dup_ctr(prev, next); continue;
+                case W32: next = reduce_dup_w32(prev, next); continue;
+                case CHR: next = reduce_dup_w32(prev, next); continue;
+                default: break;
+              }
+              break;
+            }
+
+            case MAT:
+            case IFL:
+            case SWI: {
+              switch (tag) {
+                case ERA: next = reduce_mat_era(prev, next); continue;
+                case LAM: next = reduce_mat_lam(prev, next); continue;
+                case SUP: next = reduce_mat_sup(prev, next); continue;
+                case CTR: next = reduce_mat_ctr(prev, next); continue;
+                case W32: next = reduce_mat_w32(prev, next); continue;
+                case CHR: next = reduce_mat_w32(prev, next); continue;
+                default: break;
+              }
+            }
+
+            case OPX: {
+              switch (tag) {
+                case ERA: next = reduce_opx_era(prev, next); continue;
+                case LAM: next = reduce_opx_lam(prev, next); continue;
+                case SUP: next = reduce_opx_sup(prev, next); continue;
+                case CTR: next = reduce_opx_ctr(prev, next); continue;
+                case W32: next = reduce_opx_w32(prev, next); continue;
+                case CHR: next = reduce_opx_w32(prev, next); continue;
+                default: break;
+              }
+            }
+
+            case OPY: {
+              switch (tag) {
+                case ERA: next = reduce_opy_era(prev, next); continue;
+                case LAM: next = reduce_opy_lam(prev, next); continue;
+                case SUP: next = reduce_opy_sup(prev, next); continue;
+                case CTR: next = reduce_opy_ctr(prev, next); continue;
+                case W32: next = reduce_opy_w32(prev, next); continue;
+                case CHR: next = reduce_opy_w32(prev, next); continue;
+                default: break;
+              }
+            }
+
+            default: break;
+          }
+          break;
+        }
+      }
+    }
+
+    if ((*HVM.spos) == stop) {
+      return next;
+    } else {
+      while ((*HVM.spos) > stop) {
+        Term host = spop();
+        Tag  htag = term_tag(host);
+        Lab  hlab = term_lab(host);
+        Loc  hloc = term_loc(host);
+        switch (htag) {
+          case APP: set(hloc + 0, next); break;
+          case DP0: 
+          case DP1: set(hloc + 0, next); break;
+          case LET: set(hloc + 0, next); break;
+          case MAT:
+          case IFL:
+          case SWI: set(hloc + 0, next); break;
+          case OPX: set(hloc + 0, next); break;
+          case OPY: set(hloc + 1, next); break;
+        }
+        next = host;
+      }
+      return HVM.sbuf[stop];
+    }
+
+  }
+  printf("retr: ERR\n");
+  return 0;
+}
+
+Term reduce_at(Loc host) {
+  Term tm0 = got(host);
+  if (term_tag(tm0) >= ERA) {
+    return tm0;
+  }
+  Term tm1 = reduce(tm0);
+  set(host, tm1);
+  return tm1;
+}
+
+Term normal(Term term) {
+  Term wnf = reduce(term);
+  Tag tag = term_tag(wnf);
+  Lab lab = term_lab(wnf);
+  Loc loc = term_loc(wnf);
+  switch (tag) {
+
+    case LAM: {
+      Term bod = got(loc + 0);
+      bod = normal(bod);
+      set(term_loc(wnf) + 1, bod);
+      return wnf;
+    }
+
+    case APP: {
+      Term fun = got(loc + 0);
+      Term arg = got(loc + 1);
+      fun = normal(fun);
+      arg = normal(arg);
+      set(term_loc(wnf) + 0, fun);
+      set(term_loc(wnf) + 1, arg);
+      return wnf;
+    }
+
+    case SUP: {
+      Term tm0 = got(loc + 0);
+      Term tm1 = got(loc + 1);
+      tm0 = normal(tm0);
+      tm1 = normal(tm1);
+      set(term_loc(wnf) + 0, tm0);
+      set(term_loc(wnf) + 1, tm1);
+      return wnf;
+    }
+
+    case DP0:
+    case DP1: {
+      Term val = got(loc + 0);
+      val = normal(val);
+      set(term_loc(wnf) + 0, val);
+      return wnf;
+    }
+
+    case CTR: {
+      u64 cid = lab;
+      u64 ari = HVM.cari[cid];
+      for (u64 i = 0; i < ari; i++) {
+        Term arg = got(loc + i);
+        arg = normal(arg);
+        set(term_loc(wnf) + i, arg);
+      }
+      return wnf;
+    }
+
+    case MAT:
+    case IFL:
+    case SWI: {
+      u64 len = tag == SWI ? lab : tag == IFL ? 2 : HVM.clen[lab];
+      for (u64 i = 0; i <= len; i++) {
+        Term arg = got(loc + i);
+        arg = normal(arg);
+        set(term_loc(wnf) + i, arg);
+      }
+      return wnf;
+    }
+
+    default:
+      return wnf;
+
+  }
+}
+
+// Primitives
+// ----------
+
+// Primitive: Dynamic Sup `@SUP(lab tm0 tm1)`
+// Allocates a new SUP node with given label.
+Term SUP_f(Term ref) {
+  Loc ref_loc = term_loc(ref);
+  Term lab = reduce(got(ref_loc + 0));
+  Term lab_val = term_loc(lab);
+  if (term_tag(lab) != W32) {
+    printf("ERROR:non-numeric-sup-label\n");
+  }
+  if (lab_val > 0xFFFF) {
+    printf("ERROR:sup-label-too-large\n");
+  }
+  Term tm0 = got(ref_loc + 1);
+  Term tm1 = got(ref_loc + 2);
+  Loc  sup = alloc_node(2);
+  Term ret = term_new(SUP, lab_val, sup);
+  set(sup + 0, tm0);
+  set(sup + 1, tm1);
+  *HVM.itrs += 1;
+  return ret;
+}
+
+// Primitive: Dynamic Dup `@DUP(lab val λdp0λdp1(bod))`
+// Creates a DUP node with given label.
+Term DUP_f(Term ref) {
+  Loc ref_loc = term_loc(ref);
+  Term lab = reduce(got(ref_loc + 0));
+  Term lab_val = term_loc(lab);
+  if (term_tag(lab) != W32) {
+    printf("ERROR:non-numeric-dup-label\n");
+  }
+  if (lab_val > 0xFFFF) {
+    printf("ERROR:dup-label-too-large\n");
+  }
+  Term val = got(ref_loc + 1);
+  Term bod = got(ref_loc + 2);
+  Loc  dup = alloc_node(1);
+  set(dup + 0, val);
+  if (term_tag(bod) == LAM) {
+    Loc  lam0 = term_loc(bod);
+    Term bod0 = got(lam0 + 0);
+    if (term_tag(bod0) == LAM) {
+      Loc  lam1 = term_loc(bod0);
+      Term bod1 = got(lam1 + 0);
+      sub(lam0 + 0, term_new(DP0, lab_val, dup));
+      sub(lam1 + 0, term_new(DP1, lab_val, dup));
+      *HVM.itrs += 3;
+      return bod1;
+    }
+  }
+  Loc app0 = alloc_node(2);
+  set(app0 + 0, bod);
+  set(app0 + 1, term_new(DP0, lab_val, dup));
+  Loc app1 = alloc_node(2);
+  set(app1 + 0, term_new(APP, 0, app0));
+  set(app1 + 1, term_new(DP1, lab_val, dup));
+  *HVM.itrs += 1;
+  return term_new(APP, 0, app1);
+}
+
+Term LOG_f(Term ref) {
+  printf("TODO: LOG_f");
+  exit(0);
+}
+
+void *alloc_huge(size_t size) {
+    void *ptr = mmap(NULL, size, PROT_READ | PROT_WRITE,
+                     MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE,
+                     -1, 0);
+    if (ptr == MAP_FAILED) {
+        perror("mmap failed");
+        return NULL;
+    }
+    return ptr;
+}
+
+// Runtime Memory
+// --------------
+
+void hvm_init() {
+  HVM.sbuf = alloc_huge((1ULL << 32) * sizeof(Term)); 
+  HVM.heap = alloc_huge((1ULL << 32) * sizeof(ATerm));
+  HVM.spos = alloc_huge(sizeof(u64));
+  HVM.size = alloc_huge(sizeof(u64));
+  HVM.itrs = alloc_huge(sizeof(u64));
+  HVM.frsh = alloc_huge(sizeof(u64));
+
+  #define CHECK_ALLOC(ptr, name) if (!(ptr)) { printf(name " alloc failed\n"); allocs_failed++; }
+  int allocs_failed = 0; // Track if any allocation failed
+
+  CHECK_ALLOC(HVM.sbuf, "sbuf");
+  CHECK_ALLOC(HVM.heap, "heap");
+  CHECK_ALLOC(HVM.spos, "spos");
+  CHECK_ALLOC(HVM.size, "size");
+  CHECK_ALLOC(HVM.itrs, "itrs");
+  CHECK_ALLOC(HVM.frsh, "frsh");
+
+  if (allocs_failed > 0) {
+    printf("hvm_init alloc's failed: %d allocations failed\n", allocs_failed);
+    exit(1);
+  }
+  #undef CHECK_ALLOC
+
+  *HVM.spos = 0;
+  *HVM.size = 1;
+  *HVM.itrs = 0;
+  *HVM.frsh = 0x20;
+  HVM.book[SUP_F] = SUP_f;
+  HVM.book[DUP_F] = DUP_f;
+  HVM.book[LOG_F] = LOG_f;
+  for (int i = 0; i < 65536; i++) {
+    HVM.cari[i] = 0;
+    HVM.clen[i] = 0;
+    HVM.cadt[i] = 0;
+    HVM.fari[i] = 0;
+  }
+}
+
+void hvm_munmap(void *ptr, size_t size, const char *name) {
+    if (ptr != MAP_FAILED) {
+        if (munmap(ptr, size) == -1) {
+            perror("munmap failed");
+        } else {
+            // printf("Successfully unmapped %s\n", name);
+        }
+    } else {
+        printf("%s is already null or invalid.\n", name);
+    }
+}
+
+void hvm_free() {
+    hvm_munmap(HVM.sbuf, (1ULL << 32) * sizeof(Term), "sbuf");
+    hvm_munmap(HVM.heap, (1ULL << 32) * sizeof(ATerm), "heap");
+    hvm_munmap(HVM.spos, sizeof(u64), "spos");
+    hvm_munmap(HVM.size, sizeof(u64), "size");
+    hvm_munmap(HVM.itrs, sizeof(u64), "itrs");
+    hvm_munmap(HVM.frsh, sizeof(u64), "frsh");
+}
+
+
+State* hvm_get_state() {
+  return &HVM;
+}
+
+void hvm_set_state(State* hvm) {
+  HVM.sbuf = hvm->sbuf;
+  HVM.spos = hvm->spos;
+  HVM.heap = hvm->heap;
+  HVM.size = hvm->size;
+  HVM.itrs = hvm->itrs;
+  HVM.frsh = hvm->frsh;
+  for (int i = 0; i < 65536; i++) {
+    HVM.book[i] = hvm->book[i];
+    HVM.fari[i] = hvm->fari[i];
+    HVM.cari[i] = hvm->cari[i];
+    HVM.clen[i] = hvm->clen[i];
+    HVM.cadt[i] = hvm->cadt[i];
+  }
+}
+
+void hvm_define(u16 fid, Term (*func)()) {
+  //printf("defined %llu %p\n", fid, func);
+  HVM.book[fid] = func;
+}
+
+void hvm_set_cari(u16 cid, u16 arity) {
+  HVM.cari[cid] = arity;
+}
+
+void hvm_set_fari(u16 fid, u16 arity) {
+  HVM.fari[fid] = arity;
+}
+
+void hvm_set_clen(u16 cid, u16 cases) {
+  HVM.clen[cid] = cases;
+}
+void hvm_set_cadt(u16 cid, u16 adt) {
+  HVM.cadt[cid] = adt;
+}
+
+Term print_f(Term);
+Term chain_f(Term);
+Term main_f(Term);
+Term LOG_f(Term);
+Term SUP_f(Term);
+Term DUP_f(Term);
+Term print_t(Term);
+Term chain_t(Term);
+Term main_t(Term);
+Term LOG_t(Term);
+Term SUP_t(Term);
+Term DUP_t(Term);
+
+Term print_t(Term ref) {
+  Term arg0 = got(term_loc(ref) + 0);
+  Loc lam1 = alloc_node(1);
+  Loc ctr2 = alloc_node(2);
+  set(ctr2 + 0, arg0);
+  set(ctr2 + 1, term_new(VAR, 0, lam1 + 0));
+  set(lam1 + 0, term_new(CTR, 1, ctr2));
+  return term_new(LAM, 0, lam1);
+}
+
+Term print_f(Term ref) {
+  u64 itrs = 0;
+  Term arg0 = got(term_loc(ref) + 0);
+  while (1) {
+    itrs += 0;
+    Loc lam1 = alloc_node(1);
+    Loc ctr2 = alloc_node(2);
+    set(ctr2 + 0, arg0);
+    set(ctr2 + 1, term_new(VAR, 0, lam1 + 0));
+    set(lam1 + 0, term_new(CTR, 1, ctr2));
+    *HVM.itrs += itrs;
+    return term_new(LAM, 0, lam1);
+  }
+}
+
+
+Term chain_t(Term ref) {
+  Term arg0 = got(term_loc(ref) + 0);
+  Term arg1 = got(term_loc(ref) + 1);
+  Loc mat2 = alloc_node(3);
+  set(mat2 + 0, arg1);
+  Loc lam3 = alloc_node(1);
+  set(lam3 + 0, term_new(VAR, 0, lam3 + 0));
+  set(mat2 + 1, term_new(LAM, 0, lam3));
+  Loc lam4 = alloc_node(1);
+  Loc lam5 = alloc_node(1);
+  Loc lam6 = alloc_node(1);
+  Loc app7 = alloc_node(2);
+  Loc ref8 = alloc_node(2);
+  set(ref8 + 0, term_new(VAR, 0, lam6 + 0));
+  set(ref8 + 1, term_new(VAR, 0, lam5 + 0));
+  set(app7 + 0, term_new(VAR, 0, lam4 + 0));
+  set(app7 + 1, term_new(REF, 1, ref8));
+  set(lam6 + 0, term_new(APP, 0, app7));
+  set(lam5 + 0, term_new(LAM, 0, lam6));
+  set(lam4 + 0, term_new(LAM, 0, lam5));
+  set(mat2 + 2, term_new(LAM, 0, lam4));
+  Loc app9 = alloc_node(2);
+  set(app9 + 0, term_new(MAT, 0, mat2));
+  set(app9 + 1, arg0);
+  return term_new(APP, 0, app9);
+}
+
+Term chain_f(Term ref) {
+  u64 itrs = 0;
+  Term arg0 = got(term_loc(ref) + 0);
+  Term arg1 = got(term_loc(ref) + 1);
+  while (1) {
+    Term val2 = (arg1);
+    if (term_tag(val2) == CTR) {
+      switch (term_lab(val2) - 0) {
+        case 0: {
+          itrs += 2;
+          *HVM.itrs += itrs;
+          return arg0;
+          break;
+        }
+        case 1: {
+          Term fd4 = got(term_loc(val2) + 0);
+          Term fd5 = got(term_loc(val2) + 1);
+          itrs += 4;
+          Loc app6 = alloc_node(2);
+          Loc ref7 = alloc_node(2);
+          set(ref7 + 0, arg0);
+          set(ref7 + 1, fd5);
+          set(app6 + 0, fd4);
+          set(app6 + 1, term_new(REF, 1, ref7));
+          *HVM.itrs += itrs;
+          return term_new(APP, 0, app6);
+          break;
+        }
+      }
+    }
+    set(term_loc(ref) + 0, arg0);
+    set(term_loc(ref) + 1, arg1);
+    return chain_t(ref);
+  }
+}
+
+
+Term main_t(Term ref) {
+  Loc dup0 = alloc_node(1);
+  set(dup0 + 0, term_new(W32, 0, 22));
+  Loc ref1 = alloc_node(2);
+  Loc ctr2 = alloc_node(0);
+  Loc ctr3 = alloc_node(2);
+  Loc ref4 = alloc_node(1);
+  Loc ctr5 = alloc_node(2);
+  Loc ctr6 = alloc_node(2);
+  Loc ctr7 = alloc_node(2);
+  Loc ctr8 = alloc_node(2);
+  Loc ctr9 = alloc_node(2);
+  Loc ctr10 = alloc_node(0);
+  set(ctr9 + 0, term_new(CHR, 0, 111));
+  set(ctr9 + 1, term_new(CTR, 0, ctr10));
+  set(ctr8 + 0, term_new(CHR, 0, 108));
+  set(ctr8 + 1, term_new(CTR, 1, ctr9));
+  set(ctr7 + 0, term_new(CHR, 0, 108));
+  set(ctr7 + 1, term_new(CTR, 1, ctr8));
+  set(ctr6 + 0, term_new(CHR, 0, 101));
+  set(ctr6 + 1, term_new(CTR, 1, ctr7));
+  set(ctr5 + 0, term_new(CHR, 0, 104));
+  set(ctr5 + 1, term_new(CTR, 1, ctr6));
+  set(ref4 + 0, term_new(CTR, 1, ctr5));
+  Loc ctr11 = alloc_node(2);
+  Loc ref12 = alloc_node(1);
+  Loc ctr13 = alloc_node(2);
+  Loc ctr14 = alloc_node(2);
+  Loc ctr15 = alloc_node(2);
+  Loc ctr16 = alloc_node(2);
+  Loc ctr17 = alloc_node(2);
+  Loc ctr18 = alloc_node(0);
+  set(ctr17 + 0, term_new(CHR, 0, 100));
+  set(ctr17 + 1, term_new(CTR, 0, ctr18));
+  set(ctr16 + 0, term_new(CHR, 0, 108));
+  set(ctr16 + 1, term_new(CTR, 1, ctr17));
+  set(ctr15 + 0, term_new(CHR, 0, 114));
+  set(ctr15 + 1, term_new(CTR, 1, ctr16));
+  set(ctr14 + 0, term_new(CHR, 0, 111));
+  set(ctr14 + 1, term_new(CTR, 1, ctr15));
+  set(ctr13 + 0, term_new(CHR, 0, 119));
+  set(ctr13 + 1, term_new(CTR, 1, ctr14));
+  set(ref12 + 0, term_new(CTR, 1, ctr13));
+  Loc ctr19 = alloc_node(2);
+  Loc ref20 = alloc_node(1);
+  Loc ctr21 = alloc_node(2);
+  Loc ctr22 = alloc_node(2);
+  Loc ctr23 = alloc_node(0);
+  set(ctr22 + 0, term_new(CHR, 0, 58));
+  set(ctr22 + 1, term_new(CTR, 0, ctr23));
+  set(ctr21 + 0, term_new(CHR, 0, 120));
+  set(ctr21 + 1, term_new(CTR, 1, ctr22));
+  set(ref20 + 0, term_new(CTR, 1, ctr21));
+  Loc ctr24 = alloc_node(2);
+  Loc ref25 = alloc_node(1);
+  set(ref25 + 0, term_new(DP0, 8388608, dup0 + 0));
+  Loc ctr26 = alloc_node(0);
+  set(ctr24 + 0, term_new(REF, 0, ref25));
+  set(ctr24 + 1, term_new(CTR, 0, ctr26));
+  set(ctr19 + 0, term_new(REF, 0, ref20));
+  set(ctr19 + 1, term_new(CTR, 1, ctr24));
+  set(ctr11 + 0, term_new(REF, 0, ref12));
+  set(ctr11 + 1, term_new(CTR, 1, ctr19));
+  set(ctr3 + 0, term_new(REF, 0, ref4));
+  set(ctr3 + 1, term_new(CTR, 1, ctr11));
+  set(ref1 + 0, term_new(CTR, 0, ctr2));
+  set(ref1 + 1, term_new(CTR, 1, ctr3));
+  return term_new(REF, 1, ref1);
+}
+
+Term main_f(Term ref) {
+  u64 itrs = 0;
+  while (1) {
+    Term val0 = (term_new(W32, 0, 22));
+    Term dpA1;
+    Term dpB2;
+    if (term_is_atom(val0)) {
+      itrs += 1;
+      dpA1 = val0;
+      dpB2 = val0;
+    } else {
+      Loc dup3 = alloc_node(1);
+      set(dup3 + 0, val0);
+      dpA1 = term_new(DP0, 8388608, dup3 + 0);
+      dpB2 = term_new(DP1, 8388608, dup3 + 0);
+    }
+    itrs += 0;
+    Loc ref4 = alloc_node(2);
+    Loc ctr5 = alloc_node(0);
+    Loc ctr6 = alloc_node(2);
+    Loc ref7 = alloc_node(1);
+    Loc ctr8 = alloc_node(2);
+    Loc ctr9 = alloc_node(2);
+    Loc ctr10 = alloc_node(2);
+    Loc ctr11 = alloc_node(2);
+    Loc ctr12 = alloc_node(2);
+    Loc ctr13 = alloc_node(0);
+    set(ctr12 + 0, term_new(CHR, 0, 111));
+    set(ctr12 + 1, term_new(CTR, 0, ctr13));
+    set(ctr11 + 0, term_new(CHR, 0, 108));
+    set(ctr11 + 1, term_new(CTR, 1, ctr12));
+    set(ctr10 + 0, term_new(CHR, 0, 108));
+    set(ctr10 + 1, term_new(CTR, 1, ctr11));
+    set(ctr9 + 0, term_new(CHR, 0, 101));
+    set(ctr9 + 1, term_new(CTR, 1, ctr10));
+    set(ctr8 + 0, term_new(CHR, 0, 104));
+    set(ctr8 + 1, term_new(CTR, 1, ctr9));
+    set(ref7 + 0, term_new(CTR, 1, ctr8));
+    Loc ctr14 = alloc_node(2);
+    Loc ref15 = alloc_node(1);
+    Loc ctr16 = alloc_node(2);
+    Loc ctr17 = alloc_node(2);
+    Loc ctr18 = alloc_node(2);
+    Loc ctr19 = alloc_node(2);
+    Loc ctr20 = alloc_node(2);
+    Loc ctr21 = alloc_node(0);
+    set(ctr20 + 0, term_new(CHR, 0, 100));
+    set(ctr20 + 1, term_new(CTR, 0, ctr21));
+    set(ctr19 + 0, term_new(CHR, 0, 108));
+    set(ctr19 + 1, term_new(CTR, 1, ctr20));
+    set(ctr18 + 0, term_new(CHR, 0, 114));
+    set(ctr18 + 1, term_new(CTR, 1, ctr19));
+    set(ctr17 + 0, term_new(CHR, 0, 111));
+    set(ctr17 + 1, term_new(CTR, 1, ctr18));
+    set(ctr16 + 0, term_new(CHR, 0, 119));
+    set(ctr16 + 1, term_new(CTR, 1, ctr17));
+    set(ref15 + 0, term_new(CTR, 1, ctr16));
+    Loc ctr22 = alloc_node(2);
+    Loc ref23 = alloc_node(1);
+    Loc ctr24 = alloc_node(2);
+    Loc ctr25 = alloc_node(2);
+    Loc ctr26 = alloc_node(0);
+    set(ctr25 + 0, term_new(CHR, 0, 58));
+    set(ctr25 + 1, term_new(CTR, 0, ctr26));
+    set(ctr24 + 0, term_new(CHR, 0, 120));
+    set(ctr24 + 1, term_new(CTR, 1, ctr25));
+    set(ref23 + 0, term_new(CTR, 1, ctr24));
+    Loc ctr27 = alloc_node(2);
+    Loc ref28 = alloc_node(1);
+    set(ref28 + 0, dpA1);
+    Loc ctr29 = alloc_node(0);
+    set(ctr27 + 0, term_new(REF, 0, ref28));
+    set(ctr27 + 1, term_new(CTR, 0, ctr29));
+    set(ctr22 + 0, term_new(REF, 0, ref23));
+    set(ctr22 + 1, term_new(CTR, 1, ctr27));
+    set(ctr14 + 0, term_new(REF, 0, ref15));
+    set(ctr14 + 1, term_new(CTR, 1, ctr22));
+    set(ctr6 + 0, term_new(REF, 0, ref7));
+    set(ctr6 + 1, term_new(CTR, 1, ctr14));
+    set(ref4 + 0, term_new(CTR, 0, ctr5));
+    set(ref4 + 1, term_new(CTR, 1, ctr6));
+    *HVM.itrs += itrs;
+    return term_new(REF, 1, ref4);
+  }
+}
+
+
+int main() {
+  hvm_init();
+  hvm_define(0, print_f);
+  hvm_define(1, chain_f);
+  hvm_define(2, main_f);
+
+  clock_t start = clock();
+  Term root = term_new(REF, 2, 0);
+  normal(root);
+  double time = (double)(clock() - start) / CLOCKS_PER_SEC * 1000;
+  printf("WORK: %"PRIu64" interactions\n", get_itr());
+  printf("TIME: %.3fs seconds\n", time / 1000.0);
+  printf("SIZE: %llu nodes\n", get_len());
+  printf("PERF: %.3f MIPS\n", (get_itr() / 1000000.0) / (time / 1000.0));
+  hvm_free();
+  return 0;
+}
+

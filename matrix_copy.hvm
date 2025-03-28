@@ -1,0 +1,32 @@
+
+data list  {#Nil #Cons{head tail}}
+
+@leaf(x) = λnode λleaf (leaf x)
+
+@node(a b) = λnode λleaf
+  
+  ! &{node nodeLR} = node
+  ! &{leafL leafR} = leaf
+  ! &{nodeL nodeR} = nodeLR
+  (node (a nodeL leafL) (b nodeR leafR))
+
+@ones(n) = λnode λleaf ~ n !leaf {
+  0: (leaf 1)
+  p:
+    ! & {node node_} = node
+    ! & {nodeL nodeR} = @ones(p) node_ leaf
+    (node nodeL nodeR)
+}
+
+
+@onesr(n) = λnode λleaf ~n !leaf{
+  0: (leaf 1)
+  p: (leaf 2)
+}
+
+
+@fst(n) = (n (λa λb a) λa a)
+
+@main = (@ones(1))
+
+// @main = onesr(2)

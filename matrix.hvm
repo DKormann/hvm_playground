@@ -1,0 +1,55 @@
+// Church Encoded Trees
+// ====================
+// CTree a ::= Node (CTree a) (CTree a) | Leaf a
+
+// Constructors
+// ------------
+
+data list {#Nil #Cons{head tail}}
+
+// @leaf : ∀a. a → CTree a
+@leaf(x) = λnode λleaf
+  (leaf x)
+
+// @node : ∀a. CTree a → CTree a → CTree a
+@node(l r) = λnode λleaf
+  ! &{node nodeLR} = node
+  ! &{nodeL nodeR} = nodeLR
+  ! &{leafL leafR} = leaf
+  (node (l nodeL leafL) (r nodeR leafR))
+
+// Allocation
+// ----------
+
+// We can't use the constructors here though,
+// we need to share the same λnode/λleaf:
+@ones(n) = λnode λleaf
+  ~ n !node !leaf {
+    0:
+      (leaf 1)
+    p:
+      !&{node recN} = node
+      !&{leaf recR} = (@ones(p) recN leaf)
+      (node leaf recR)
+  }
+       
+// Recursion
+// ---------
+
+// Recursive functions don't need recursion
+// since Church encodings encapsulate it
+@sum(t) =
+  ! node_fold = λa λb (+ a b)
+  ! leaf_fold = λx x
+  (t node_fold leaf_fold)
+
+// Test
+// ----
+
+// Since we used a Dup Node to allocate 'ones', and
+// since Church encodings "fuse" (i.e., deforest),
+// then, summing all ones will compute the same as:
+// @sum(n) = ~ n { 0:1 p:!&{x0 x1}=p (+ x0 x1) }
+// Which is `O(N)` rather than `O(2^N)`:
+
+@main = @sum(@ones(5))

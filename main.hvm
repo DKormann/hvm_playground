@@ -1,0 +1,25 @@
+
+data List { #Nil #Cons {head tail}}
+
+@print(text) = λctx #Cons{text ctx}
+
+@chain(ctx actions) = ~actions !ctx{
+  #Nil: ctx
+  #Cons{action tail}: (action @chain(ctx tail))
+}
+
+
+
+
+
+@main = 
+  !&{x _} = 22
+  @chain([] [
+    @print("hello")
+    @print("world")
+    @print("x:")
+    @print(x)])
+
+  
+
+
