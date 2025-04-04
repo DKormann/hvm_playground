@@ -1,0 +1,13 @@
+
+
+@mut(ref fn) = !! $new = (fn (ref $new)) *
+@spt(ref fn) = (fn λ$y(ref $z) λ$z($y))
+
+@main =
+  ! $X = λ$x(0) // u32* X = &0;
+  !! @spt($X λ$X0 λ$X1 *) // u32* X0 = X; u32* X1 = X;
+  !! @mut($X1 λx(+ x 1)) // *X += 1;
+  !! @mut($X0 λx(+ x 1)) // *X += 1;
+
+
+  $x // *X

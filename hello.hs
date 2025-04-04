@@ -1,9 +1,9 @@
-import GHC.Internal.TopHandler (runIO)
 
-comp :: Int -> IO Int
-comp x = print("done.") >> return (x * 2)
 
-main :: IO ()
+hs = "hello\nworld"
+
+parse s = case s of 
+  s -> s
+
 main = do
-  let x = (comp 2)
-  x >>= \xx -> print xx
+  putStrLn $ parse hs

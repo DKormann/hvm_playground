@@ -1,0 +1,97 @@
+
+data Pair { #Pair{fst snd} }
+data List { #Nil #Cons{head tail} }
+data Tree { #Leaf #Node{lft rgt} }
+
+// Utils
+// -----
+
+@is_node(tree) = ~tree {
+  #Leaf: 0
+  #Node{lft rgt}: 1
+}
+
+@range(n r) = ~n !r {
+  0: r
+  p: !&0{p0 p1}=p @range(p0 #Cons{p1 r})
+}
+
+@fst(p) = ~p {
+  #Pair{fst snd}: fst
+}
+
+@snd(p) = ~p {
+  #Pair{fst snd}: snd
+}
+
+@tm0(sup) = !&0{tm0 tm1}=sup tm0
+@tm1(sup) = !&0{tm0 tm1}=sup tm1
+
+// Mutable references
+@mut(ref fn) = !! $new = (fn (ref $new)) *
+@spt(ref fn) = (fn λ$y(ref $z) λ$z($y))
+
+
+
+
+// The slow version passes a context monadically, with a pair state.
+@list_to_tree_slow(n ctx) = ~n !ctx {
+  // Base Case:
+  // - take the ctx's head
+  // - return the context's tail and '#Leaf{head}'
+  0: ~ctx {
+    #Nil: *
+    #Cons{head tail}: #Pair{tail #Leaf{head}}
+  }
+  // Step Case:
+  // - recurse to the lft, get the new ctx and 'lft' tree
+  // - recurse to the rgt, get the new ctx and 'rgt' tree
+  // - return the final context and a '#Node{lft rgt}'
+  p:
+    !&0{p0 p1}=p
+    ~ @list_to_tree_slow(p0 ctx) {
+      #Pair{ctx lft}: ~ @list_to_tree_slow(p1 ctx) {
+        #Pair{ctx rgt}: #Pair{ctx #Node{lft rgt}}
+      }
+    }
+}
+
+
+@list_to_tree_fast_par(n ctx) = ~n !ctx{
+  0: ~ctx{
+    #Nil: *
+    #Cons{head tail}: &0{tail #Leaf{head}}
+  }
+  p:
+    !&0{p0 p1} = p
+    !&0{ctx lft} = @list_to_tree_fast_par(p0 ctx)
+    !&0{ctx rgt} = @list_to_tree_fast_par(p1 ctx)
+    &0{ctx #Node{lft rgt}}
+}
+
+
+@dpth(n) = ~n{
+  #Leaf:0
+  #Node{a b}:(+ 1 @dpth(b))
+}
+
+
+@N = 16
+
+@main = 
+  // @dpth
+  (@snd(
+    @list_to_tree_slow(@N @range((<< 1 @N) 0))))
+
+
+@depth = 16
+
+// @main = @is_node(@tm1(@list_to_tree_fast_par(@N @range((<< 1 @N) 0))))
+
+// @main = @is_node(@tm1(@list_to_tree_fast_par(@depth (@range((<< 1 @depth) 0)))))
+
+@main = "hello\nthere"
+
+
+
+

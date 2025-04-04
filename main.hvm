@@ -12,14 +12,15 @@ data List { #Nil #Cons {head tail}}
 
 
 
-@main = 
-  !&{x _} = 22
-  @chain([] [
-    @print("hello")
-    @print("world")
-    @print("x:")
-    @print(x)])
+// @main = 
+//   !&{x _} = 22
+//   @chain([] [
+//     @print("hello")
+//     @print("world")
+//     @print("x:")
+//     @print(x)])
 
   
 
+@main = %3{1 2}
 

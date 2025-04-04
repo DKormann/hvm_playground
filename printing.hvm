@@ -1,0 +1,26 @@
+
+
+data list {#Nil #Cons{a b}}
+
+
+@print(out next) = &0{out next}
+
+@main =
+  // ! out = "result:"
+  // ! out = @print(out "hello1")
+  // ! out = @print(out "hello2")
+  // ! out = @print(out "hello3")
+
+  !out = &{
+    1
+    &{
+      2
+      3
+    }
+  }
+  out
+
+
+
+
+

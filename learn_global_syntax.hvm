@@ -1,0 +1,15 @@
+
+data list {#Cons{a b} #Nil}
+
+
+@fn =  22
+
+@eff(n) = "ok"
+
+@main =
+  ! $X = λ$x(0) // u32* X = &0;
+
+  !! ($X 55)
+  $x
+
+

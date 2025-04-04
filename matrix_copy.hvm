@@ -1,20 +1,18 @@
 
 data list  {#Nil #Cons{head tail}}
 
-
-
 @ones(n) = λnode λleaf ~ n !leaf {
   0: (leaf 1)
   p:
     ! & 0{node node_} = node
-    ! & 1{nodeL nodeR} = (@ones(p)//)
-      node_ leaf)
-
-
-    ! & 1{nodeL nodeR} = ( &1 {nodeL nodeR})
-    ! & 1{nodeL nodeR} = ( &1 {nodeL nodeR})
+    ! & 1{nodeL nodeR} = (@ones(p) node_ leaf)
     (node nodeL nodeR)
 }
+
+
+@realize(t) = (t
+  λl λr [l r]
+  λl l)
 
 @sum(t) = (t
   (λl λr (+ l r))
@@ -36,7 +34,18 @@ data list  {#Nil #Cons{head tail}}
 
 
 
+// @main = @sum(@ones(5))
 
+// @main = @realize(@ones(5))
 
-@main = (@ones(2))
 // @main = @sumr(@onesr(3))
+
+
+@main =
+  ! a = 1
+  ! f = λx (+ x 1)
+  ! &{f1 f2} = f
+  ! &{a b} = a
+
+  ( &1{f1 f2} &1{a b})
+  // a

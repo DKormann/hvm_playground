@@ -1,0 +1,19 @@
+
+data list {#Nil #Cons{head tail}}
+
+@f1 = 
+  !l = λx λy x
+
+  !s = (l &1{22 33})
+  !&1{a b} = s
+  !&1{a b} = ( &1{a b})
+  
+  a
+
+
+@main = @f1
+
+@main = "hello\nworld"
+
+
+
