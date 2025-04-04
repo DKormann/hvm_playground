@@ -126,8 +126,6 @@ data Maybe {
   }
 }
 
-@main = #O
-
 // Stringification
 // ---------------
 
@@ -224,7 +222,6 @@ data Maybe {
 }
 
 
-
 // Enumeration
 // -----------
 
@@ -254,6 +251,9 @@ data Maybe {
 
 @X = @all1(25)
 
+
+
+
 // // Solve `?x` in `λaλb(?x λt(t a b)) == λaλbλt(t b a)`
 @main =
   ! &5{x0 x1} = @do_parse_term(@X)
@@ -261,5 +261,42 @@ data Maybe {
   @when(solved @do_show_term(x1))
 
 
+
+@tm0(x)= ! &0{a b} = x a
+@tm1(x)= ! &0{a b} = x b
+
+
+@all2(n) = ~n{
+  0: #E
+  p: !&2{p0 p1}=@all2(p) &3{
+    #O{p0}
+    #I{p1}
+  }
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
 @main =
-  @do_parse_term(@list2bits([1 0 0 1]))
+  // @parse_term(@list2bits([1 1 0]))
+  // @do_parse_term(@all1(4))
+  // (@tm1(@parse_term(@all1(6))))
+
+  // @do_bind_term(#Lam{#Var{1}})
+
+  // λa @if(0 a 0)
+
+  (@all2(4))
+
+  
+
+  
