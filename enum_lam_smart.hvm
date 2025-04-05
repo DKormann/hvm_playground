@@ -311,5 +311,26 @@ data Maybe {
   @when(solved @do_show_term(@X))
 
 
+@main = 
+  // @do_show_term(@A)
+
+  @nf()
+
+@native_lam(lam) = ~ lam {
+  #Lam{bod}: λa @native_lam((bod #Var{a}))
+  #App{fun arg}: (@native_lam(fun) @native_lam(arg))
+  #Var{val}: val
+  #Sub{val}: "unexpected sub"
+}
+
+
+// @main =
+
+
+//   @native_lam((@tm1(@all(1 4 #Nil))))
+
+  
+
+
 
 
