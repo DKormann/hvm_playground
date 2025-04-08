@@ -1,0 +1,25 @@
+
+
+data list{#Nil #Cons{a b}}
+
+@T = 1
+@F = 0
+
+@nand(a b) = (- 1 (* a b))
+
+@nand(a b) =(- 1 ~a{
+    0:0
+    p:b
+  })
+
+
+@nets(ctx) =
+  ~ ctx {
+    #Nil: *
+    #Cons{h t}:
+      
+  }
+
+@main =
+  @nand(1 @nand(1 0))
+  // λa λb @nand(a b)
