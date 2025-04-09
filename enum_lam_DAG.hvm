@@ -1,9 +1,4 @@
-
-
 data list{#Nil #Cons{a b}}
-
-@T = 1
-@F = 0
 
 @nand(a b) = (- 1 (* a b))
 
@@ -12,14 +7,32 @@ data list{#Nil #Cons{a b}}
     p:b
   })
 
+@sublayer(head secondary rest) = ~secondary !rest{
+  #Nil: rest
+  #Cons{h t}:
+    ! &{h1 h2} = head
+    #Cons{[h1 h] @sublayer(h2 t rest)}
+}
 
-@nets(ctx) =
-  ~ ctx {
-    #Nil: *
+@layer(srcs rest) =
+  !&{s1 s2} = srcs
+  ~s1 !rest{
+  #Nil: rest
+  #Cons{h tail}:
+    @sublayer(h s2 @layer(tail rest))
+}
+
+@nets(srcs stack) =
+  ~stack !srcs{
+    #Nil:
+      ! &{l1 l2} = @layer(srcs #Nil)
+      @nets(l1 l2)
     #Cons{h t}:
-      
+      &0{
+        h
+        @nets(srcs t)
+      }
   }
 
-@main =
-  @nand(1 @nand(1 0))
-  // λa λb @nand(a b)
+@main = @nets([1 2 3] #Nil)
+
