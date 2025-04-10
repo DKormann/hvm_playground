@@ -24,88 +24,85 @@ data pair{#Pair{fst snd}}
       @sublayer(h2 t rest)}
 }
 
-@layer(srcs rest) =
+@layer(srcs) =
   !&{s1 s2} = srcs
-  ~s1 !rest{
-    #Nil: rest
+  ~s1 {
+    #Nil: []
     #Cons{h tail}:
-      @sublayer(h s2 @layer(tail rest))
+      @sublayer(h s2 @layer(tail))
   }
 
-@makenets(srcs stack) =
-  ~stack !srcs{
-    #Nil:
-      ! &{l1 l2} = @layer(srcs #Nil)
-      @makenets(l1 l2)
-    #Cons{h t}:
-      &77{
-        h
-        @makenets(srcs t)
-      }
-  }
-
-
-
-
+@makenets(srcs) = !&{n1 n2} = @layer(srcs)
+  @concat(n1 @makenets(n2))
 
 @map(fn ls) = ~ls{ #Nil:[] #Cons{h t}: ! &{f1 f2} = fn #Cons{(f1 h) @map(f2 t)}}
 
 @when(c t) = ~ c {0: * p: t}
 
 @concat(a b) = ~a !b{#Nil: b #Cons{h t}: #Cons{h @concat(t b)}}
-
-@lmap(f l)=~l{
-  #Nil: #Nil
-  #Cons{h t}:
-    ! &{f1 f2} = f
-    #Cons{(f1 h) @lmap(f2 t)}
+@slice(n x) = ~n{
+  0: [] p: ~x{
+    #Nil: []
+    #Cons{h t}: #Cons{h @slice(p t)}
+  }
 }
-
-@l2sup(ls)= ~ls{
-  #Nil: *
-  #Cons{h t}:
-    &77{h @l2sup(t)}
-}
-
-@main = !n = @node( @leaf(22) @leaf(33))
-  !n = (n (λa λb @node(a b)) λl @leaf(l))
-  n
 
 @push(tup item) = (λf (tup (f item)))
 
-@permut(N) = ~N{
-  0: @leaf([])
+@death(x) = @death(x)
+
+data maybe{#Some{x} #None}
+
+@permute(n) = ~n{
+  0: [[]]
   p:
-    ! &0{a b} = (@permut(p)
-      λa λb @node(a b)
-      λl @leaf(#Cons{&0{0 1} l}))
-    @node(a b)
+    !&0 {p1 p2} = @map(λx #Cons{&0{0 1} x} @permute(p))
+    @concat(p1 p2)
 }
 
-@main =
-  λa λb λc
-  !s =  @lmap(λx @leaf(x) [a b c])
-  ! n = @nets(s #Nil)
-  n
+@do_permute(n) = @roll(78 @concat(@map(λx #Some{x} @permute(n)) [#None]))
 
 @showtree(t) = (t λa λb [a b] λl l)
 
+@roll(&L ls) = ~ls{#Nil: * #Cons{h t}: &L{h @roll(&L t)}}
+@supslice(&L n sup) = ~n{0: * p: !&L{a b} = sup &L{a @supslice(&L b p)}}
+@unroll(&L sup) = !&L{a b} = sup #Cons{a @unroll(&L b)}
+
 @allnets = λa λb λc
-  !srcs = @lmap(λx @leaf(x) [a b c])
-  @makenets(srcs #Nil)
+  !srcs = @map(λx @leaf(x) [a b c])
+  @roll(77 @makenets(srcs))
 
-@net0 =
-  !&77{a b} = @allnets
-  // !&77{a b} = b
-  a
+@l0(ls) = ~ls{
+  #Nil: *
+  #Cons{h t}: h}
 
+@apply(fn args) = ~args !fn{
+  #Nil: fn
+  #Cons{h t}: @apply((fn h) t)
+}
 
+@maybe_map(fn mb) = ~mb{
+  #None: #None
+  #Some{v}: #Some{@apply(fn v)}
+}
+
+@t = λa λb λc  @nand(a b)
+
+@allcollapse(x) =
+  ! &78{head tail} = x
+  ~head{
+    #Some{h}: ~h{
+      0: 0
+      p: @allcollapse(tail)
+    }
+    #None: 1
+  }
 
 @main =
-  !x = @permut(3)
-  // @showtree(x)
-  // @allnets
-  // @net0
+  !x = @do_permute(3)
 
-  !&77{a b} = @l2sup(@layer(@lmap(λx @leaf(x) [1 2 3]) []))
-  a
+  // (@roll(77 (@allnets 1 0 1)))
+
+  // @allnets
+  // @allcollapse(@maybe_map(@t x))
+
