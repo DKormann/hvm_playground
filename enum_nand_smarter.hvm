@@ -1,0 +1,57 @@
+data list{#Nil #Cons{a b}}
+
+@nand(a b) = (- 1 (* a b))
+
+@nand(a b) =(- 1 ~a{
+    0:0
+    p:b
+  })
+
+@nand(a b) = [a b]
+
+@l2sup(ls &L) = ~ls {#Nil: * #Cons{h t}: &L{h @l2sup(t &L)}}
+
+data term{#Term{term id}}
+
+@rootTerm(n) = ! &{n1 n2} = n #Term{n1 n2}
+
+@lin(a b rest) = ~b !rest{
+  #Nil: rest
+  #Cons{h t}:
+    ! &{a1 a2} = a
+    !cont = @lin(a1 t rest)
+    ~a2{
+      #Term{ta da}: ~h{
+      #Term{tb db}:
+        ! &{da1 da2} = da
+        ! &{db1 db2} = db
+        ~(> da1 db1) !cont {
+          0: #Cons{
+              #Term{@nand(ta tb) (+ da2 (<< db2 2))}
+              cont
+            }
+          p: cont
+        }
+      }
+    }
+}
+
+@commute(a b rest) = ~a !rest{
+  #Nil: rest
+  #Cons{h t}:
+    !&{b1 b2} = b
+    @commute(t b1 @lin(h b2 rest))
+}
+
+@map(fn ls) = ~ls{ #Nil: #Nil #Cons{h t}: ! &{f1 f2} = fn #Cons{(f1 h) @map(f2 t)}}
+
+@main =
+  ! &{r1 r2} = @map(λx @rootTerm(x) [1 2 3 4])
+
+  ! &{r1 r2} = @commute(r1 r2 #Nil)
+  ! &{r1 r2} = @commute(r1 r2 #Nil)
+  ! &{r1 r2} = @commute(r1 r2 #Nil)
+  
+  @l2sup(r1 0)
+
+
