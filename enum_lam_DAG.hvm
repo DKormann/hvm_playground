@@ -1,9 +1,7 @@
 
 data list{#Nil #Cons{a b}}
 data tree{#Node{c1 c2} #Leaf{v}}
-
 data pair{#Pair{fst snd}}
-
 
 @and(a b) =~a{
     0:0
@@ -17,13 +15,18 @@ data pair{#Pair{fst snd}}
   p: 1
 }
 
+@which(t s) = ~t{
+  0: *
+  p: s
+}
+
 @sublayer(head secondary rest) = ~secondary !rest{
   #Nil: rest
   #Cons{h t}:
     ! &{h1 h2} = head
     #Cons{
-      // λa ((a h) h1)
-      #Node{h h1}
+      // #Node{h h1}
+      @nand(h h1)
       @sublayer(h2 t rest)}
 }
 
@@ -53,8 +56,7 @@ data pair{#Pair{fst snd}}
 
 @concat(a b) = ~a !b{#Nil: b #Cons{h t}: #Cons{h @concat(t b)}}
 
-// @t = λa λb λc (* a b)
-@t = λa λb λc @nand(a b)
+
 
 @lmap(f l)=~l{
   #Nil: #Nil
@@ -77,18 +79,34 @@ data pair{#Pair{fst snd}}
     ((f (x1 f1)) (x2 f2))
   }
 
-@slice(&L n x) = ~n{
-  0: #Nil
-  p: !&L{a b} = x
-    #Cons{a @slice(&L p b)}
-}
+// @slice(&L n x) = ~n{
+//   0: #Nil
+//   p: !&L{a b} = x
+//     #Cons{a @slice(&L p b)}
+// }
+
+
+@X = @gensup(3)
+
+@t = λa λb λc @nand(a b)
+
+@Y = (@X @t)
 
 @main =
-  !X = @gensup(3)
-  // (@collapse(3 (X @t)) λa λb @and(a b)) 
+
+  ! &{nets1 nets2} = (λa λb λc
+  ! src = @map(λx x [a b c])
+  @nets(src []))
+  ! pred = (@X nets1)
+
+  ! succ = (== @Y pred)
+
+  ! succ = (@collapse(3 succ) λa λb @and(a b))
+
+  @which(succ nets2)
 
 
-  // @slice(77 10 @nets([1 2 3] #Nil))
+  
 
 
 
