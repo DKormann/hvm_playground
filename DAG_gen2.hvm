@@ -1,0 +1,111 @@
+
+data list{#Nil #Cons{a b}}
+data net{#Node{c1 c2} #Leaf{v}}
+data pair{#Pair{fst snd}}
+
+@and(a b) =~a{0:0 p:b }
+@nand(a b) = (- 1 @and(a b))
+@or(a b) = ~a !b{ 0: b p: 1 }
+
+@leaf(x) = λnode λleaf (leaf x)
+@node(a b) = λnode λleaf
+  !&{n1 node} = node
+  !&{n2 node} = node
+  !&{l1 l2} = leaf
+  (node (a n1 l1) (b n2 l2))
+
+
+@sublayer(head secondary rest) = ~secondary !rest{
+  #Nil: rest
+  #Cons{h t}:
+    ! &{h1 h2} = head
+    #Cons{
+      @node(h h1)
+      @sublayer(h2 t rest)}
+}
+
+@layer(srcs rest) =
+  !&{s1 s2} = srcs
+  ~s1 !rest{
+    #Nil: rest
+    #Cons{h tail}:
+      @sublayer(h s2 @layer(tail rest))
+  }
+
+@makenets(srcs stack) =
+  ~stack !srcs{
+    #Nil:
+      ! &{l1 l2} = @layer(srcs #Nil)
+      @makenets(l1 l2)
+    #Cons{h t}:
+      &77{
+        h
+        @makenets(srcs t)
+      }
+  }
+
+
+
+
+
+@map(fn ls) = ~ls{ #Nil:[] #Cons{h t}: ! &{f1 f2} = fn #Cons{(f1 h) @map(f2 t)}}
+
+@when(c t) = ~ c {0: * p: t}
+
+@concat(a b) = ~a !b{#Nil: b #Cons{h t}: #Cons{h @concat(t b)}}
+
+@lmap(f l)=~l{
+  #Nil: #Nil
+  #Cons{h t}:
+    ! &{f1 f2} = f
+    #Cons{(f1 h) @lmap(f2 t)}
+}
+
+@l2sup(ls)= ~ls{
+  #Nil: *
+  #Cons{h t}:
+    &77{h @l2sup(t)}
+}
+
+@main = !n = @node( @leaf(22) @leaf(33))
+  !n = (n (λa λb @node(a b)) λl @leaf(l))
+  n
+
+@push(tup item) = (λf (tup (f item)))
+
+@permut(N) = ~N{
+  0: @leaf([])
+  p:
+    ! &0{a b} = (@permut(p)
+      λa λb @node(a b)
+      λl @leaf(#Cons{&0{0 1} l}))
+    @node(a b)
+}
+
+@main =
+  λa λb λc
+  !s =  @lmap(λx @leaf(x) [a b c])
+  ! n = @nets(s #Nil)
+  n
+
+@showtree(t) = (t λa λb [a b] λl l)
+
+@allnets = λa λb λc
+  !srcs = @lmap(λx @leaf(x) [a b c])
+  @makenets(srcs #Nil)
+
+@net0 =
+  !&77{a b} = @allnets
+  // !&77{a b} = b
+  a
+
+
+
+@main =
+  !x = @permut(3)
+  // @showtree(x)
+  // @allnets
+  // @net0
+
+  !&77{a b} = @l2sup(@layer(@lmap(λx @leaf(x) [1 2 3]) []))
+  a
