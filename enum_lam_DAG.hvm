@@ -1,19 +1,29 @@
 
 data list{#Nil #Cons{a b}}
+data tree{#Node{c1 c2} #Leaf{v}}
 
-@nand(a b) = (- 1 (* a b))
+data pair{#Pair{fst snd}}
 
-@nand(a b) =(- 1 ~a{
+
+@and(a b) =~a{
     0:0
     p:b
-  })
+  }
+
+@nand(a b) = (- 1 @and(a b))
+
+@or(a b) = ~a !b{
+  0: b
+  p: 1
+}
 
 @sublayer(head secondary rest) = ~secondary !rest{
   #Nil: rest
   #Cons{h t}:
     ! &{h1 h2} = head
     #Cons{
-      @nand(h h1)
+      // λa ((a h) h1)
+      #Node{h h1}
       @sublayer(h2 t rest)}
 }
 
@@ -37,47 +47,48 @@ data list{#Nil #Cons{a b}}
       }
   }
 
-
 @map(fn ls) = ~ls{ #Nil:[] #Cons{h t}: ! &{f1 f2} = fn #Cons{(f1 h) @map(f2 t)}}
 
 @when(c t) = ~ c {0: * p: t}
 
 @concat(a b) = ~a !b{#Nil: b #Cons{h t}: #Cons{h @concat(t b)}}
 
-@X(n) = ~n{
-  0: #Cons{#Nil #Nil}
-  p:
-    !&0{a b} = @map(λx #Cons{&0{0 1} x} @X(p))
-    @concat(a b)
-}
-
-@solved(fn) = @when((@X fn) @X)
-
-@app(f arglist) = ~arglist !f{#Nil: f #Cons{h t}: @app((f h) t)}
-
-@all(l) = ~l{#Nil: 1 #Cons{h t}: ~h{0:0 p:@all(t)}}
-
 // @t = λa λb λc (* a b)
 @t = λa λb λc @nand(a b)
 
-@check(f) = λargs
-  ! &{a1 a2} = args
-  (== @app(f a1) @app(@t a2))
+@lmap(f l)=~l{
+  #Nil: #Nil
+  #Cons{h t}:
+    ! &{f1 f2} = f
+    #Cons{(f1 h) @lmap(f2 t)}
+}
+
+@gensup(&N) = ~(- &N 0){
+  0: λx x
+  &p: λf (@gensup(&p) (f &p{0 1}))
+}
+
+@collapse(&N x) =
+  ~(+ &N 0) !x{
+  0: λf (x)
+  &p:
+    ! &p{x1 x2} = @collapse(&p x)
+    λf !&{f f1} = f !&{f f2} = f
+    ((f (x1 f1)) (x2 f2))
+  }
+
+@slice(&L n x) = ~n{
+  0: #Nil
+  p: !&L{a b} = x
+    #Cons{a @slice(&L p b)}
+}
 
 @main =
+  !X = @gensup(3)
+  // (@collapse(3 (X @t)) λa λb @and(a b)) 
 
-  !&{n1 n2} = λa λb λc @nets([a b c] #Nil)
-  @when(@all(@map(@check(n1) @X(3))) n2)
 
-// @main = λa λb λc @nets([a b c] #Nil)
+  // @slice(77 10 @nets([1 2 3] #Nil))
 
-@main =
-  !nn = (λa λb @nets([a b] #Nil))
-  !&77{a b} = nn
-  !&77{a b} = a
-  // (λx λy λz (((a x) y) z))
 
-  λa λb @nand(a b)
 
-@main =
-  ((λa @nand(a 0)) 0)
