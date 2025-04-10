@@ -1,7 +1,10 @@
 
+// search over circuits to replicate a given truth function with nand gates only
+// generate all circuits (nets) as superposition with label 77
+// generate all possible arguments as superposition with label 78
+
+
 data list{#Nil #Cons{a b}}
-data net{#Node{c1 c2} #Leaf{v}}
-data pair{#Pair{fst snd}}
 
 @and(a b) =~a{0:0 p:b }
 @nand(a b) = (- 1 @and(a b))
@@ -14,7 +17,6 @@ data pair{#Pair{fst snd}}
   !&{l1 l2} = leaf
   (node (a n1 l1) (b n2 l2))
 
-
 @sublayer(head secondary rest) = ~secondary !rest{
   #Nil: rest
   #Cons{h t}:
@@ -24,6 +26,7 @@ data pair{#Pair{fst snd}}
       @sublayer(h2 t rest)}
 }
 
+// generate list of new nodes given last nodes
 @layer(srcs) =
   !&{s1 s2} = srcs
   ~s1 {
@@ -32,8 +35,15 @@ data pair{#Pair{fst snd}}
       @sublayer(h s2 @layer(tail))
   }
 
-@makenets(srcs) = !&{n1 n2} = @layer(srcs)
-  @concat(n1 @makenets(n2))
+
+// generate list of all nets
+@makenets(srcs) = !&{n1 n2} = @layer(srcs) @concat(n1 @makenets(n2))
+
+// generate superposition of all nets
+@allnets = λa λb λc
+  !srcs = @map(λx @leaf(x) [a b c])
+  @roll(77 @makenets(srcs))
+
 
 @map(fn ls) = ~ls{ #Nil:[] #Cons{h t}: ! &{f1 f2} = fn #Cons{(f1 h) @map(f2 t)}}
 
@@ -47,12 +57,10 @@ data pair{#Pair{fst snd}}
   }
 }
 
-@push(tup item) = (λf (tup (f item)))
-
-@death(x) = @death(x)
-
 data maybe{#Some{x} #None}
 
+
+// generate all permutations of truth values
 @permute(n) = ~n{
   0: [[]]
   p:
@@ -62,19 +70,10 @@ data maybe{#Some{x} #None}
 
 @do_permute(n) = @roll(78 @concat(@map(λx #Some{x} @permute(n)) [#None]))
 
-@showtree(t) = (t λa λb [a b] λl l)
-
 @roll(&L ls) = ~ls{#Nil: * #Cons{h t}: &L{h @roll(&L t)}}
 @supslice(&L n sup) = ~n{0: * p: !&L{a b} = sup &L{a @supslice(&L b p)}}
 @unroll(&L sup) = !&L{a b} = sup #Cons{a @unroll(&L b)}
 
-@allnets = λa λb λc
-  !srcs = @map(λx @leaf(x) [a b c])
-  @roll(77 @makenets(srcs))
-
-@l0(ls) = ~ls{
-  #Nil: *
-  #Cons{h t}: h}
 
 @apply(fn args) = ~args !fn{
   #Nil: fn
@@ -83,10 +82,8 @@ data maybe{#Some{x} #None}
 
 @maybe_map(fn mb) = ~mb{
   #None: #None
-  #Some{v}: #Some{@apply(fn v)}
+  #Some{v}: #Some{(fn v)}
 }
-
-@t = λa λb λc  @nand(a b)
 
 @allcollapse(x) =
   ! &78{head tail} = x
@@ -98,11 +95,34 @@ data maybe{#Some{x} #None}
     #None: 1
   }
 
+@nandnet(net) = (net
+  (λa λb @nand(a b))
+  λleaf leaf)
+
+data show{#Nand{a b}}
+
+@show_net(net) = (net
+  (λa λb #Nand{a b})
+  λleaf leaf)
+
+// try different truth functions
+@t = λa λb λc  @nand(a c)
+@t = λa λb λc  @or(a c)
+@t = λa λb λc  @and(a b)
+
 @main =
   !x = @do_permute(3)
 
-  // (@roll(77 (@allnets 1 0 1)))
+  λa λb λc
+  @show_net(
+  @when(
+  @allcollapse(@maybe_map(
+    λe
+      !&{e1 e2} = e
+      (== @nandnet(@apply(@allnets e1))
+      @apply(@t e2)) x))
+  (@allnets a b c)
+  )
+  )
 
-  // @allnets
-  // @allcollapse(@maybe_map(@t x))
 
