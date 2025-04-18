@@ -5,7 +5,8 @@ inductive Ty
 | int : Ty
 | string : Ty
 | arrow : Ty → Ty → Ty
-| list : Ty → Ty
+-- | list : Ty → Ty
+-- | maybe : Ty → Ty
 deriving Repr
 
 open Ty
@@ -14,15 +15,14 @@ structure Var (t: Ty) where
   name: String
 deriving Repr
 
-inductive LList: Ty -> Type
-| cons {t :Ty}: (Expr t) -> (LList t) -> (LList t)
-| nil : LList t
-
 inductive Expr: Ty -> Type
 | var: (v : Var t) -> Expr t
 | intlit : Nat -> Expr int
 | stringlit : String -> Expr string
--- | listlit : (List (Expr a)) -> Expr (list a)
+-- | nil: Expr (list t)
+-- | cons {t}: (Expr t) -> (Expr (list t)) -> Expr (list t)
+-- | none {t}: Expr (maybe t)
+-- | some {t}: (Expr t) -> Expr (maybe t)
 | lam {a b : Ty} (param: Var a) (body: Expr b) : Expr (arrow a b)
 | app {a b : Ty} (f: Expr (arrow a b)) (x: Expr a) : Expr b
 | sup {a:Ty} (label: Nat) (x: Expr a) (b: Expr a) : Expr a
@@ -37,12 +37,13 @@ class ToExpr (t: Type) (b:Ty) where
 instance {b} : ToExpr (Expr b) b where
   toExpr e := e
 
+
+instance: ToExpr Nat int where toExpr n := intlit n
+instance: ToExpr String string where toExpr n := stringlit n
+
+
+
 def useExpr {t:Type} {b:Ty} [ToExpr t b] (x: t): Expr b := ToExpr.toExpr x
-
-instance: ToExpr Nat int where
-  toExpr n := intlit n
-
-instance: ToExpr String string where
 
 
 
@@ -52,6 +53,7 @@ def newvar {t:Ty} (x: String): Expr t := var ⟨x⟩
 def compile: Expr t -> String
 | var v => v.name
 | intlit n => toString n
+| stringlit s => s
 | lam param body =>
   s!"λ{param.name}. {compile body}"
 | app f x =>
